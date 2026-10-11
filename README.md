@@ -78,3 +78,18 @@ commit SHA. A consumer never edits the package from its own repo.
 
 Device-key signing of queued actions (TA-OFF-008) is **API-CHG-011 part b** and is not in v0.1.0 — no unused
 extension point ships. It arrives as a new version that a consumer opts into by bumping its pin.
+
+## Known defects (v0.1.0)
+
+**KI-227-01 — a queued write never replays in a real browser.** `src/sw/replay-loop.ts` keeps the native
+`fetch` in a variable (`const fetchImpl = deps.fetch ?? fetch`) and later calls it as a method of another
+object (`ctx.fetchImpl(url, init)`). Chromium refuses that with *"Illegal invocation"*, and the surrounding
+`catch` reads it as "no signal", so every replay attempt of every queued write retries with backoff for ever.
+Unit suites never see it because they inject a stub `fetch`. It was found while proving the move in a real
+browser; it is **byte-for-byte what the DC shipped**, so v0.1.0 carries it unchanged — fixing it changes
+what tablets do (rows stuck on a device would start to send) and is the DC owner's decision, taken in a
+change run that names every consumer. Verified fix: `fetch.bind(globalThis)`. The DC pins the defect with an
+`it.fails` test that goes red the day it is fixed.
+
+**Consumers must not assume the offline drain works until this is fixed.** The queue, its on-device format, the
+idempotency key, the token confinement and the page-side triggers are unaffected; only the send is.
