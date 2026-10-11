@@ -1,0 +1,110 @@
+{
+  "name": "@bananaworld/offline-queue",
+  "version": "0.1.0",
+  "private": true,
+  "description": "THE shared offline write queue for the Bananaworld estate's tablet apps (CR-DC-227, packhouse API-CHG-005). One implementation of: the IndexedDB queue and its on-device format, the idempotent replay loop, the service-worker wiring (install / activate / fetch / message / sync, token confined to the worker), the session renewal, the driver-style offline read caches, and the page-side drain triggers. Replaces the copy that lived inside the DC. Shipped as TypeScript source; consumers transpile it via Next.js transpilePackages. Everything an app can differ on is INJECTED (QueueWorkerSettings, every field required, no defaults) — this package never reads process.env and names none of an app's routes.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    "./schema": {
+      "types": "./src/schema.ts",
+      "default": "./src/schema.ts"
+    },
+    "./queue": {
+      "types": "./src/queue.ts",
+      "default": "./src/queue.ts"
+    },
+    "./idempotency": {
+      "types": "./src/idempotency.ts",
+      "default": "./src/idempotency.ts"
+    },
+    "./sync-protocol": {
+      "types": "./src/sync-protocol.ts",
+      "default": "./src/sync-protocol.ts"
+    },
+    "./token-storage": {
+      "types": "./src/token-storage.ts",
+      "default": "./src/token-storage.ts"
+    },
+    "./read-cache": {
+      "types": "./src/read-cache.ts",
+      "default": "./src/read-cache.ts"
+    },
+    "./settings": {
+      "types": "./src/settings.ts",
+      "default": "./src/settings.ts"
+    },
+    "./sw/fetch-handler": {
+      "types": "./src/sw/fetch-handler.ts",
+      "default": "./src/sw/fetch-handler.ts"
+    },
+    "./sw/replay-loop": {
+      "types": "./src/sw/replay-loop.ts",
+      "default": "./src/sw/replay-loop.ts"
+    },
+    "./sw/message-handlers": {
+      "types": "./src/sw/message-handlers.ts",
+      "default": "./src/sw/message-handlers.ts"
+    },
+    "./sw/session-renewal": {
+      "types": "./src/sw/session-renewal.ts",
+      "default": "./src/sw/session-renewal.ts"
+    },
+    "./sw/single-flight": {
+      "types": "./src/sw/single-flight.ts",
+      "default": "./src/sw/single-flight.ts"
+    },
+    "./sw/navigation-cache": {
+      "types": "./src/sw/navigation-cache.ts",
+      "default": "./src/sw/navigation-cache.ts"
+    },
+    "./sw/install": {
+      "types": "./src/sw/install.ts",
+      "default": "./src/sw/install.ts"
+    },
+    "./react/QueueDrainTriggers": {
+      "types": "./src/react/QueueDrainTriggers.tsx",
+      "default": "./src/react/QueueDrainTriggers.tsx"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --max-warnings=0",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\"",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "idb": "^8.0.3"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.15",
+    "eslint": "^9.39.4",
+    "eslint-plugin-security": "^3.0.1",
+    "fake-indexeddb": "^6.2.5",
+    "happy-dom": "^15.11.7",
+    "prettier": "^3.4.0",
+    "react": "^19.2.6",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.60.0",
+    "vitest": "^2.1.8"
+  }
+}

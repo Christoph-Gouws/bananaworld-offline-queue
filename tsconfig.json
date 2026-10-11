@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "ES2022", "webworker"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@/lib/offline-queue/schema": ["./tests/support/schema.ts"],
+      "@/lib/offline-queue": ["./tests/support/offline-queue.ts"],
+      "@/sw/message-handlers": ["./tests/support/message-handlers.ts"],
+      "@/sw/build-id": ["./tests/support/build-id.ts"],
+      "@/sw/*": ["./src/sw/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "vitest.config.ts"]
+}
