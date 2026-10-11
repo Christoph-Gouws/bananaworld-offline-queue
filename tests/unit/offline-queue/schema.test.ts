@@ -23,7 +23,13 @@ describe("openOfflineQueueDB (schema v1)", () => {
   it("creates the four object stores: pending_writes, sync_history, session_token, driver_reads", async () => {
     const db = await openOfflineQueueDB();
     const storeNames = Array.from(db.objectStoreNames).sort();
-    expect(storeNames).toEqual(["driver_reads", "pending_writes", "session_token", "sync_history"]);
+    expect(storeNames).toEqual([
+      "driver_reads",
+      "pending_writes",
+      "queue_maintenance",
+      "session_token",
+      "sync_history",
+    ]);
     db.close();
   });
 

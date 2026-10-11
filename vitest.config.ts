@@ -18,6 +18,7 @@ export default defineConfig({
       { find: /^@\/lib\/offline-queue$/, replacement: support("offline-queue.ts") },
       { find: "@/sw/message-handlers", replacement: support("message-handlers.ts") },
       { find: "@/sw/build-id", replacement: support("build-id.ts") },
+      { find: "@/sw/pre-update-clear", replacement: support("pre-update-clear.ts") },
       { find: /^@\/sw\/(.*)$/, replacement: resolve(here, "src/sw/$1") },
     ],
   },

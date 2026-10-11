@@ -43,6 +43,12 @@ export interface QueueWorkerSettings extends ReadCacheSettings {
   /** The station-pairing redeem door: live, never queued, never given a Bearer. */
   readonly stationPairRedeemPath: string;
 
+  /**
+   * The app's existing station-session audit door for queue actions (CR-DC-240). The pre-update clear
+   * tells the office what it removed through it. Same-origin; the worker is its only caller.
+   */
+  readonly queueActionPath: string;
+
   /** The sliding-window renewal endpoint. Same-origin; the worker is its only caller. */
   readonly sessionRenewalPath: string;
   /** `max(grace, half the token's life)` — the app's session-lifetime rule, as minutes remaining. */

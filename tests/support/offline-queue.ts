@@ -4,6 +4,7 @@
 export * from "./schema";
 export * from "../../src/idempotency";
 export * from "../../src/queue";
+export * from "../../src/pre-update-clear";
 export * from "../../src/sync-protocol";
 export * from "../../src/token-storage";
 export {

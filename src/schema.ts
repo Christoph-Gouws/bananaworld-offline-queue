@@ -20,7 +20,8 @@
 //                            the run and the stop. Bounded (see driver-reads.ts).
 //
 // Schema version 1 at M007; version 2 at CR-DC-068 (operator + station identity on
-// `pending_writes`); version 3 at CR-DC-088 (the `driver_reads` store). Future
+// `pending_writes`); version 3 at CR-DC-088 (the `driver_reads` store); version 4 at CR-DC-240
+// (the `queue_maintenance` store). Future
 // migrations go in the `idb.openDB` upgrade callback — keep them additive (add new
 // stores / indexes, never drop or rename) per the same discipline as the Postgres
 // migrations.
@@ -36,6 +37,9 @@
 // THE MITIGATION IS A PROCEDURE, NOT A HOPE: if CR-DC-088 has to be backed out after a tablet has
 // run it, the revert KEEPS `DB_VERSION` AT 3 AND THE `oldVersion < 3` BRANCH IN PLACE, and removes
 // only the behaviour (the cache write, the serve, the prefetch, the banner).
+//
+// 🔴 CR-DC-240 — `DB_VERSION` IS NOW 4, AND THE SAME RULE APPLIES. A backout KEEPS `DB_VERSION` AT 4 AND
+// THE `oldVersion < 4` BRANCH, and removes only the behaviour (the sweep, the report, the panel line).
 
 import {
   type DBSchema,
@@ -48,7 +52,12 @@ import {
 // CR-DC-227 — the database NAME is the app's (a setting: `QueueWorkerSettings.dbName`); the VERSION and
 // everything inside the database is the format, and is the package's. Each app's origin gets its own
 // store, so two apps naming theirs identically still cannot collide.
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
+
+// CR-DC-240 — the generation stamp every row written by a FIXED worker carries. A row without it was
+// written by a pre-fix worker, whose replay never reached a server (KI-227-01), and is cleared once
+// rather than sent late. See `clearPreUpdateWrites` in pre-update-clear.ts.
+export const REPLAY_GENERATION = 1;
 
 // Status of a pending_writes row through its lifecycle.
 //   - queued   → enqueued; awaiting first replay attempt (offline) or backoff window
@@ -137,6 +146,10 @@ export interface PendingWriteRecord {
   // Save. See the logic plan §1.5.1.
   operatorId: string | null;
   stationId: string | null;
+  // 🔴 CR-DC-240 — stamped by `enqueueWrite` with REPLAY_GENERATION. ABSENT = written by a worker whose
+  // replay could never send (KI-227-01), so the row is cleared once and never replayed. OPTIONAL, so no
+  // index and no upgrade step is needed for it (the same precedent as `failureCode`).
+  replayGeneration?: number;
 }
 
 // The shape a `pending_writes` row has BEFORE the version-2 upgrade: no identity fields at all.
@@ -245,6 +258,34 @@ export interface DriverReadRecord {
   bytes: number;
 }
 
+export const PRE_UPDATE_CLEAR_ID = "pre-update-clear-ki-227-01";
+
+/**
+ * CR-DC-240 — what the pre-update clear removed, per row. 🔴 NO request body and NO headers are ever
+ * copied here (owner ruling): a body carries business data, a header can carry a credential-adjacent
+ * value.
+ */
+export interface PreUpdateClearedRow {
+  idempotencyKey: string;
+  method: PendingWriteRecord["method"];
+  // `new URL(row.url).pathname` — no origin, no query.
+  path: string;
+  queuedAt: string;
+  status: "queued" | "syncing" | "failed";
+  // Who captured it (UUIDs, never names); null when the row carried no identity.
+  operatorId: string | null;
+  stationId: string | null;
+  // Has the office been told? pending → sent | refused (a 400 is never retried).
+  report: { state: "pending" | "sent" | "refused"; at: string | null };
+}
+
+/** The one-off clear record. Its PRESENCE is the persisted marker "the sweep has run — never again". */
+export interface PreUpdateClearRecord {
+  id: typeof PRE_UPDATE_CLEAR_ID;
+  clearedAt: string;
+  rows: PreUpdateClearedRow[];
+}
+
 // idb's DBSchema for compile-time typing of the open()/transaction()/store APIs.
 export interface OfflineQueueSchema extends DBSchema {
   pending_writes: {
@@ -276,6 +317,11 @@ export interface OfflineQueueSchema extends DBSchema {
     indexes: {
       by_stored_at: string;
     };
+  };
+  // CR-DC-240 — device-side maintenance records. Today: the pre-update clear marker + its row list.
+  queue_maintenance: {
+    key: string;
+    value: PreUpdateClearRecord;
   };
 }
 
@@ -350,6 +396,12 @@ export async function openQueueDb(
       if (oldVersion < 3) {
         const driverReads = db.createObjectStore("driver_reads", { keyPath: "key" });
         driverReads.createIndex("by_stored_at", "storedAt");
+      }
+      // Version 3 → 4 (CR-DC-240): the maintenance store holding the pre-update clear record.
+      //
+      // 🔴 ADDITIVE ONLY. One new store; `pending_writes` is not recreated, deleted or re-indexed.
+      if (oldVersion < 4) {
+        db.createObjectStore("queue_maintenance", { keyPath: "id" });
       }
       // Future migrations append here. Each one gates on `oldVersion < N` and
       // bumps `DB_VERSION` at the top of this file. Keep migrations additive —

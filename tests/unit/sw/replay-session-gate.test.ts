@@ -208,6 +208,9 @@ describe("CR-DC-068 — a replay requires a usable session of its own", () => {
       failureReason: null,
       failureMessage: null,
       warehouseId: TEST_SESSION_WAREHOUSE,
+      // CR-DC-240 — a row without a generation stamp is a PRE-FIX row and the replay refuses it
+      // outright; this case is about the missing IDENTITY, so the row is stamped as a post-fix one.
+      replayGeneration: 1,
     } as unknown as PendingWriteRecord);
 
     const fetchSpy = vi.fn();

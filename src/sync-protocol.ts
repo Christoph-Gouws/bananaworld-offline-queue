@@ -111,6 +111,10 @@ export interface SyncStatusSnapshot {
   //   manager needs. A required field would have meant a queue-schema change (a non-goal) and would
   //   have broken every existing reader.
   swBuildId?: string;
+  // CR-DC-240 — how many unsent items the one-off pre-update clear removed from this tablet, and when.
+  // Absent when the clear has not run or removed nothing; absent from an older worker, so the panel
+  // shows nothing there. A count and a time only — never a row, never a body.
+  preUpdateCleared?: { count: number; clearedAt: string };
 }
 
 export type SyncReply =
