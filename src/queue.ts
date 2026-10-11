@@ -12,6 +12,7 @@
 // pattern keeps the module testable with the in-memory `fake-indexeddb` and
 // avoids hidden singletons that complicate Stage 04 test isolation.
 
+import { REPLAY_GENERATION } from "./schema";
 import type {
   ConflictReason,
   DiscardReasonCode,
@@ -176,6 +177,8 @@ export async function enqueueWrite(
     // CR-DC-068 — stamped once, at capture, and never rewritten afterwards.
     operatorId: input.operatorId ?? null,
     stationId: input.stationId ?? null,
+    // CR-DC-240 — marks this row as written by a worker whose replay really sends.
+    replayGeneration: REPLAY_GENERATION,
   };
   let id: IDBValidKey;
   try {

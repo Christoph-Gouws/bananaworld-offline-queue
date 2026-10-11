@@ -128,7 +128,7 @@ describe("CR-DC-068 AC-8 — opening a POPULATED version-1 database at the curre
     await createPopulatedV1DB(seeded);
 
     upgraded = await openOfflineQueueDB();
-    expect(upgraded.version).toBe(3);
+    expect(upgraded.version).toBe(4);
 
     const rows = await getPendingWrites(upgraded);
     expect(rows).toHaveLength(3);
@@ -190,6 +190,7 @@ describe("CR-DC-068 AC-8 — opening a POPULATED version-1 database at the curre
     expect([...upgraded.objectStoreNames].sort()).toEqual([
       "driver_reads",
       "pending_writes",
+      "queue_maintenance",
       "session_token",
       "sync_history",
     ]);
@@ -204,10 +205,11 @@ describe("CR-DC-068 AC-8 — opening a POPULATED version-1 database at the curre
     });
 
     upgraded = await openOfflineQueueDB();
-    expect(upgraded.version).toBe(3);
+    expect(upgraded.version).toBe(4);
     expect([...upgraded.objectStoreNames].sort()).toEqual([
       "driver_reads",
       "pending_writes",
+      "queue_maintenance",
       "session_token",
       "sync_history",
     ]);

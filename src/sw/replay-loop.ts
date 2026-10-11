@@ -41,9 +41,20 @@ import {
   pruneSyncHistory,
   writeBelongsToSession,
 } from "../queue";
+import { isPreUpdateRow } from "../pre-update-clear";
 import type { ConflictReason, OfflineQueueDB, PendingWriteRecord } from "../schema";
 import { isSessionIdle, isSessionTokenExpired, type StationSession } from "../token-storage";
 import { isSameOriginApiUrl } from "./fetch-handler";
+import { globalFetch } from "./global-fetch";
+
+// 🔴 CR-DC-240 (KI-227-01) — THE DEFECT THIS CLOSES. The native `fetch` is a WebIDL operation on the
+// worker's global scope. The loop used to keep it on a context object and call it as a METHOD of that
+// object (`ctx.fetchImpl(url, …)`), and Chromium throws "Illegal invocation" for that. The throw was
+// caught as a network failure, so no queued write reached a server from 2026-05-28 until this fix.
+// Every unit suite injected a stub `fetch` that ignores `this`, which is why nothing caught it.
+//
+// The default is the `this`-ignoring wrapper in ./global-fetch, and `tryFetch` ALSO calls it unbound —
+// two independent defences — and each app's compiled-worker e2e is the real proof.
 
 const MAX_ATTEMPTS_BEFORE_FAIL = 100;
 const BACKOFF_SECONDS = [1, 2, 4, 8, 16, 32];
@@ -121,12 +132,17 @@ export type ReplayOutcome =
  */
 export async function runReplay(deps: ReplayDeps): Promise<ReplayOutcome[]> {
   const now = (deps.now ?? defaultNow)();
-  const fetchImpl = deps.fetch ?? fetch;
+  const fetchImpl = deps.fetch ?? globalFetch;
   const token = await deps.readToken();
   const pending = await getPendingWrites(deps.db);
   const outcomes: ReplayOutcome[] = [];
 
   for (const write of pending) {
+    // CR-DC-240 — work saved by a pre-fix worker is NEVER sent (owner ruling 2026-10-11): the sweep
+    // clears it once, and this is the backstop if that sweep has not managed to commit yet. No
+    // outcome, no attempt, no send; the row is left exactly as it was. FIRST, ahead of every other
+    // decision about the row.
+    if (isPreUpdateRow(write)) continue;
     const outcome = await replayOneWrite(write, { deps, fetchImpl, token, now });
     if (outcome) outcomes.push(outcome);
   }
@@ -300,8 +316,10 @@ async function tryFetch(
   write: PendingWriteRecord,
   ctx: ReplayOneContext,
 ): Promise<Response | null> {
+  // Unbound from its holder on purpose (KI-227-01) — never `ctx.fetchImpl(…)`.
+  const send = ctx.fetchImpl;
   try {
-    return await ctx.fetchImpl(write.url, buildReplayRequestInit(write, ctx.token));
+    return await send(write.url, buildReplayRequestInit(write, ctx.token));
   } catch {
     return null; // network error — caller handles retryable transition
   }

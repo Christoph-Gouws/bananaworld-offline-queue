@@ -114,10 +114,11 @@ describe("CR-DC-088 — opening a POPULATED version-2 database at version 3", ()
     await createPopulatedV2DB();
     upgraded = await openOfflineQueueDB();
     expect(upgraded.version).toBe(DB_VERSION);
-    expect(upgraded.version).toBe(3);
+    expect(upgraded.version).toBe(4);
     expect([...upgraded.objectStoreNames].sort()).toEqual([
       "driver_reads",
       "pending_writes",
+      "queue_maintenance",
       "session_token",
       "sync_history",
     ]);

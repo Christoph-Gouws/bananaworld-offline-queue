@@ -19,6 +19,7 @@ import {
   retryFailedWrite,
   writeBelongsToSession,
 } from "../queue";
+import { readPreUpdateClear } from "../pre-update-clear";
 import { clearDriverReads } from "../read-cache";
 import type { OfflineQueueDB } from "../schema";
 import type { SyncReply, SyncRequest, SyncStatusSnapshot } from "../sync-protocol";
@@ -64,6 +65,7 @@ async function buildSyncSnapshotImpl(
   // snapshot is rebuilt on every request and every replay broadcast rather than cached. Signing in
   // is what moves a row out of Held; signing out is what moves rows into it.
   const held = await getHeldWrites(deps.db, await usableSession(deps));
+  const cleared = await readPreUpdateClear(deps.db);
   // Last successful sync = most-recent sync_history entry with outcome=synced.
   const lastSynced = history.find((row) => row.outcome === "synced");
   return {
@@ -76,6 +78,10 @@ async function buildSyncSnapshotImpl(
     // CR-DC-086 — sent by THIS worker, so what the panel shows is what the tablet is actually
     // running. An older worker has no such field and the panel says so.
     swBuildId: settings.buildId,
+    // CR-DC-240 — a count and a time, never the rows. Absent when the clear removed nothing.
+    ...(cleared !== null && cleared.rows.length > 0
+      ? { preUpdateCleared: { count: cleared.rows.length, clearedAt: cleared.clearedAt } }
+      : {}),
   };
 }
 

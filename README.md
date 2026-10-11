@@ -12,7 +12,7 @@ way `@bananaworld/org-contract` is consumed. **There is no barrel** — every le
 
 | Subpath                       | What it is                                                                                         |
 | ----------------------------- | -------------------------------------------------------------------------------------------------- |
-| `./schema`                    | The IndexedDB schema and **`openQueueDb(dbName)`**. `DB_VERSION = 3` and the v1→v2→v3 upgrade code. |
+| `./schema`                    | The IndexedDB schema and **`openQueueDb(dbName)`**. `DB_VERSION = 4` and the v1→…→v4 upgrade code. |
 | `./queue`                     | enqueue / dequeue / retry / discard / held-write APIs, the synced-history retention (200).         |
 | `./idempotency`               | The `Idempotency-Key` header and UUID v4 generator.                                                |
 | `./sync-protocol`             | Page ↔ worker message types and `askServiceWorker()`.                                              |
@@ -21,6 +21,9 @@ way `@bananaworld/org-contract` is consumed. **There is no barrel** — every le
 | `./settings`                  | **`QueueWorkerSettings`** — the one typed object an app hands over.                                |
 | `./sw/install`                | **`installQueueWorker(self, settings)`** — the whole listener wiring.                              |
 | `./sw/fetch-handler`          | Tablet write / read handling, auth passthrough. `createFetchHandler(...)`.                         |
+| `./pre-update-clear`          | The one-off clear of pre-fix rows: `clearPreUpdateWrites`, the marker, `readPreUpdateClear`.       |
+| `./sw/pre-update-clear`       | The worker half: `runPreUpdateClear`, `reportPreUpdateClears` (the audit report).                  |
+| `./sw/global-fetch`           | `globalFetch` — the `this`-ignoring default `fetch`.                                               |
 | `./sw/replay-loop`            | The replay pass: backoff 1/2/4/8/16/30 s, 100 attempts, the session gate.                          |
 | `./sw/message-handlers`       | Page → worker messages. `createMessageHandlers({ buildId })`.                                      |
 | `./sw/session-renewal`        | The sliding-window renewal. `createSessionRenewal(...)`.                                           |
@@ -49,8 +52,8 @@ worker's build id.
 
 ## What is the package's, and must not be renamed
 
-The **on-device format** is identical for every app: the four store names (`pending_writes`,
-`sync_history`, `session_token`, `driver_reads`), the record fields (`warehouseId`, `stationId`,
+The **on-device format** is identical for every app: the five store names (`pending_writes`,
+`sync_history`, `session_token`, `driver_reads`, `queue_maintenance`), the record fields (`warehouseId`, `stationId`,
 `operatorId` …), `DB_VERSION`, the idempotency header, the replay backoff and attempt ceiling, the
 synced-history retention and the read-cache bounds. Renaming any of them strands work queued on a tablet
 that updates mid-shift. The field name `warehouseId` is the DC's vocabulary living inside a shared format
@@ -76,20 +79,26 @@ Proposed: the DC project stewards the package (the `org-contract` model, with th
 A change is an estate change run that **names every consumer**; consumers move only by bumping their pinned
 commit SHA. A consumer never edits the package from its own repo.
 
-Device-key signing of queued actions (TA-OFF-008) is **API-CHG-011 part b** and is not in v0.1.0 — no unused
-extension point ships. It arrives as a new version that a consumer opts into by bumping its pin.
+Device-key signing of queued actions (TA-OFF-008) is **API-CHG-011 part b** and is not in this package yet —
+no unused extension point ships. It arrives as a new version that a consumer opts into by bumping its pin.
 
-## Known defects (v0.1.0)
+## v0.2.0 — KI-227-01 fixed (CR-DC-240, carried in by CR-DC-227)
 
-**KI-227-01 — a queued write never replays in a real browser.** `src/sw/replay-loop.ts` keeps the native
-`fetch` in a variable (`const fetchImpl = deps.fetch ?? fetch`) and later calls it as a method of another
-object (`ctx.fetchImpl(url, init)`). Chromium refuses that with *"Illegal invocation"*, and the surrounding
-`catch` reads it as "no signal", so every replay attempt of every queued write retries with backoff for ever.
-Unit suites never see it because they inject a stub `fetch`. It was found while proving the move in a real
-browser; it is **byte-for-byte what the DC shipped**, so v0.1.0 carries it unchanged — fixing it changes
-what tablets do (rows stuck on a device would start to send) and is the DC owner's decision, taken in a
-change run that names every consumer. Verified fix: `fetch.bind(globalThis)`. The DC pins the defect with an
-`it.fails` test that goes red the day it is fixed.
+**KI-227-01 — a queued write never replayed in a real browser.** v0.1.0 kept the native `fetch` in a variable
+and later called it as a method of another object (`ctx.fetchImpl(url, init)`). Chromium refuses that with
+*"Illegal invocation"*, and the surrounding `catch` read it as "no signal", so no queued write ever reached a
+server. v0.2.0 carries the DC's fix (CR-DC-240, live in production since 2026-10-11):
 
-**Consumers must not assume the offline drain works until this is fixed.** The queue, its on-device format, the
-idempotency key, the token confinement and the page-side triggers are unaffected; only the send is.
+- **`sw/global-fetch`** — `globalFetch`, a `this`-ignoring wrapper, is the replay loop's default `fetch`, and the
+  call itself is unbound (`const send = ctx.fetchImpl; send(…)`). Fenced by `tests/unit/sw/no-method-form-fetch.test.ts`.
+- **DB_VERSION 4** — one new store, `queue_maintenance`; every row `enqueueWrite` writes now carries
+  `replayGeneration`.
+- **The pre-update clear** (`pre-update-clear`, `sw/pre-update-clear`) — rows WITHOUT `replayGeneration` were written
+  by a worker that could never send; they are cleared ONCE on the first activation (before any replay, and again
+  at the top of every replay pass), a record of what was cleared is kept (method, path, time, status — never a
+  body), the app's audit door (`queueActionPath`, a new required setting) is told, and the snapshot carries
+  `preUpdateCleared: { count, clearedAt }` for the panel.
+- 🔴 **The marker travels with the database.** Its presence (`queue_maintenance` / `pre-update-clear-ki-227-01`) is
+  what stops a second clear. The database name stays the app's setting, the store and the record id are the
+  format — a tablet that already ran CR-DC-240 on the DC does NOT clear again after moving to the package. A
+  fresh app (the packhouse) sweeps once over an empty queue and is then "done".

@@ -20,6 +20,7 @@
       "@/lib/offline-queue": ["./tests/support/offline-queue.ts"],
       "@/sw/message-handlers": ["./tests/support/message-handlers.ts"],
       "@/sw/build-id": ["./tests/support/build-id.ts"],
+      "@/sw/pre-update-clear": ["./tests/support/pre-update-clear.ts"],
       "@/sw/*": ["./src/sw/*"]
     }
   },

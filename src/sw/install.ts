@@ -35,6 +35,7 @@ import {
   shouldReplayAfterMessage,
 } from "./message-handlers";
 import { createNavigationCache, isCacheableStaticAsset } from "./navigation-cache";
+import { reportPreUpdateClears, runPreUpdateClear } from "./pre-update-clear";
 import { runReplay } from "./replay-loop";
 import { createSessionRenewal } from "./session-renewal";
 import { singleFlight } from "./single-flight";
@@ -193,6 +194,10 @@ export function installQueueWorker(self: QueueWorkerScope, settings: QueueWorker
             )
             .map((k) => caches.delete(k)),
         );
+        // CR-DC-240 — clear the work a pre-fix worker saved, BEFORE claiming clients, so no sync / drain /
+        // retry can run ahead of it. Failure is caught inside; a failed sweep never stops activation
+        // (the replay pass runs it again, and the replay loop refuses pre-fix rows regardless).
+        await runPreUpdateClear(await getDB());
         await self.clients.claim();
       })(),
     );
@@ -398,12 +403,21 @@ export function installQueueWorker(self: QueueWorkerScope, settings: QueueWorker
 
   async function runReplayAndBroadcast(): Promise<void> {
     const db = await getDB();
+    // CR-DC-240 — idempotent: one marker read once it has run. Every replay trigger passes through here,
+    // so no replay can run before the pre-update clear has.
+    await runPreUpdateClear(db);
     const outcomes = await runReplay({
       db,
       readToken: () => readTokenFromDB(db),
       // REV-9 follow-up — lets the loop discard any queued cross-origin write (e.g. a pre-fix QC photo
       // PUT) that can never sync, instead of retrying it forever.
       swOrigin: self.location.origin,
+    });
+    // CR-DC-240 — tell the office what the clear removed, once a usable session exists.
+    await reportPreUpdateClears({
+      db,
+      readToken: () => readTokenFromDB(db),
+      queueActionPath: settings.queueActionPath,
     });
 
     // Broadcast state change to every connected client tab so useSyncStatus()

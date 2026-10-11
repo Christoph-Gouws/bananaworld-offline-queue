@@ -18,6 +18,7 @@ export const NEUTRAL_SETTINGS: QueueWorkerSettings = {
   authPathPrefix: "/api/identity/",
   authLogoutPath: "/api/identity/logout",
   stationPairRedeemPath: "/api/stations/redeem",
+  queueActionPath: "/api/identity/queue-audit",
   sessionRenewalPath: "/api/identity/renew",
   renewalThresholdMinutes: (autoLogoffMinutes) => Math.max(15, autoLogoffMinutes / 2),
   isNeverQueuedWrite: (requestUrl) => {
