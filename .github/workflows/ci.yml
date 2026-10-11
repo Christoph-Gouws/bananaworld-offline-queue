@@ -9,7 +9,11 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the gitleaks action scans `<head>^..<head>` on a pull request, and a depth-1
+      # checkout of the merge ref does not contain that commit ("unknown revision").
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
