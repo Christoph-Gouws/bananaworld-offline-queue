@@ -56,6 +56,8 @@ export function installQueueWorker(self: QueueWorkerScope, settings: QueueWorker
       readCache: createReadCache({ isProtectedReadPath: settings.isProtectedReadPath }),
       queueFullCode: settings.queueFullCode,
       queueFullMessage: settings.queueFullMessage,
+      isLiveOnlyWrite: settings.isLiveOnlyWrite,
+      earlierWorkWaitingMessage: settings.earlierWorkWaitingMessage,
     });
   const {
     handleDriverNavigation,

@@ -12,6 +12,7 @@
 // pattern keeps the module testable with the in-memory `fake-indexeddb` and
 // avoids hidden singletons that complicate Stage 04 test isolation.
 
+import { isPreUpdateRow } from "./pre-update-clear";
 import { REPLAY_GENERATION } from "./schema";
 import type {
   ConflictReason,
@@ -443,9 +444,13 @@ export async function discardUnreplayableWrite(
 // ---------------------------------------------------------------------------
 
 /**
- * Every pending write in `queuedAt` order — the replay-loop iteration target
- * and the UX-SCREEN-230 list source. `queued` and `syncing` rows come first,
- * `failed` rows last (grouped by status, then by queuedAt within each group).
+ * Every pending write in save order — the replay-loop iteration target and the UX-SCREEN-230 list
+ * source. `queued` and `syncing` rows come first, `failed` rows last; within a group, by `queuedAt`,
+ * and by the auto-increment `id` when two rows share a millisecond.
+ *
+ * 🔴 CR-DC-267 — `queued` AND `syncing` SHARE ONE RANK. They used to rank 0 and 1, so a row left
+ * `syncing` by a killed worker (it was mid-send, so it is the EARLIEST thing in flight) was retried
+ * AFTER every later `queued` row: the same order inversion as the backoff skip, by another route.
  */
 export async function getPendingWrites(db: OfflineQueueDB): Promise<PendingWriteRecord[]> {
   const tx = db.transaction("pending_writes", "readonly");
@@ -454,12 +459,27 @@ export async function getPendingWrites(db: OfflineQueueDB): Promise<PendingWrite
 
   const statusOrder: Record<PendingWriteStatus, number> = {
     queued: 0,
-    syncing: 1,
-    failed: 2,
-    synced: 3, // synced rows don't typically appear here (they move to history) but defend.
+    syncing: 0,
+    failed: 1,
+    synced: 2, // synced rows don't typically appear here (they move to history) but defend.
   };
   return all.sort(
-    (a, b) => statusOrder[a.status] - statusOrder[b.status] || a.queuedAt.localeCompare(b.queuedAt),
+    (a, b) =>
+      statusOrder[a.status] - statusOrder[b.status] ||
+      a.queuedAt.localeCompare(b.queuedAt) ||
+      (a.id ?? 0) - (b.id ?? 0),
+  );
+}
+
+/**
+ * CR-DC-267 — is any work saved earlier than "now" still waiting on this device? `queued` and `syncing`
+ * rows count; `failed` rows (refused — they wait for a person, not for time) and pre-update rows (never
+ * sent by design) do not, for the same reason they never hold back a replay pass.
+ */
+export async function hasEarlierWaitingWork(db: OfflineQueueDB): Promise<boolean> {
+  const all = await getPendingWrites(db);
+  return all.some(
+    (row) => (row.status === "queued" || row.status === "syncing") && !isPreUpdateRow(row),
   );
 }
 

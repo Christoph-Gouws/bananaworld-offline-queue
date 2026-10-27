@@ -64,6 +64,11 @@ export interface QueueWorkerSettings extends ReadCacheSettings {
   /** The words the operator reads when the tablet is full. Single-line: it travels in a JSON body. */
   readonly queueFullMessage: string;
 
+  /** CR-DC-267 — writes whose screen needs the office's answer NOW (refused, not queued, while earlier work waits). */
+  readonly isLiveOnlyWrite: (requestUrl: string) => boolean;
+  /** CR-DC-267 — the words the operator reads for that refusal. Single-line: it travels in a JSON body. */
+  readonly earlierWorkWaitingMessage: string;
+
   readonly navigation: NavigationSettings;
 
   /** The shell cache's current version name, and every cache name THIS worker owns is derived from it. */

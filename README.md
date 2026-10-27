@@ -82,6 +82,21 @@ commit SHA. A consumer never edits the package from its own repo.
 Device-key signing of queued actions (TA-OFF-008) is **API-CHG-011 part b** and is not in this package yet —
 no unused extension point ships. It arrives as a new version that a consumer opts into by bumping its pin.
 
+## v0.3.0 — the queue sends in the order it was saved (CR-DC-267)
+
+**The rule.** Within one device queue, a row is never sent while an earlier row is still waiting — held (no
+usable session, or another person's), backed off, or its send got no answer. A refused (`failed`) row, an
+exhausted row, a pre-update row and a discarded cross-origin row never hold anything back. v0.2.0 stepped over
+a row inside its backoff window and sent the next, so a later save overtook an earlier one (two pallets swapped
+numbers on the packhouse, bananaworld-ph PR #55).
+
+- **`runReplay`** — head-of-line block; a row behind a waiting one reports `skipped` / `behind-earlier` and is left untouched (no attempt counted).
+- **Send timeout** — every replay send is bounded by `REPLAY_FETCH_TIMEOUT_MS` (30 s) with an abort signal; a hung request no longer stalls every later pass. A timeout takes the ordinary retryable path.
+- **`getPendingWrites`** — `queued` and `syncing` share one rank (a stale `syncing` row is retried first), ties broken by insertion order.
+- **An online save waits its turn** — with earlier work waiting, an ordinary write is queued (202) behind it; a live-only write is refused `409 EARLIER_WORK_WAITING`, nothing queued.
+- **Two new REQUIRED settings, no defaults:** `isLiveOnlyWrite(requestUrl)` and `earlierWorkWaitingMessage`. An app that does not answer both does not compile.
+- No on-device format change (`DB_VERSION` stays 4). The backoff schedule, attempt ceiling and refusal handling are unchanged.
+
 ## v0.2.0 — KI-227-01 fixed (CR-DC-240, carried in by CR-DC-227)
 
 **KI-227-01 — a queued write never replayed in a real browser.** v0.1.0 kept the native `fetch` in a variable

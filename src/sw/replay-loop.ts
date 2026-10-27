@@ -4,7 +4,9 @@
 //          TECH-BE-010, API-FAIL-007 (OFFLINE_QUEUE_SYNC_CONFLICT), API-SYNC-001,
 //          PRD-NFR-005 (10-min outage), PRD-NFR-006 (multi-station concurrent).
 //
-// Iterates pending_writes in queuedAt order; replays each via fetch from the
+// Iterates pending_writes in queuedAt order — and NEVER sends a row while an earlier one is still
+// waiting (held, backed off, mid-send); a refused (`failed`) row does not hold anything back (CR-DC-267).
+// Replays each via fetch from the
 // SW context (which lets the SW inject `Authorization: Bearer <token>` from
 // its protected storage per SEC-AUTH-013); maps the response code to a queue
 // transition:
@@ -59,6 +61,8 @@ import { globalFetch } from "./global-fetch";
 const MAX_ATTEMPTS_BEFORE_FAIL = 100;
 const BACKOFF_SECONDS = [1, 2, 4, 8, 16, 32];
 const BACKOFF_CAP_SECONDS = 30;
+/** CR-DC-267 — how long one replay send may wait for an answer. A mechanism bound, not a business value. */
+export const REPLAY_FETCH_TIMEOUT_MS = 30_000;
 
 export interface ReplayDeps {
   db: OfflineQueueDB;
@@ -80,6 +84,8 @@ export interface ReplayDeps {
    * exercise this guard, so the discard is opt-in.
    */
   swOrigin?: string;
+  /** Override for tests; defaults to `REPLAY_FETCH_TIMEOUT_MS`. */
+  fetchTimeoutMs?: number;
 }
 
 export type ReplayOutcome =
@@ -94,7 +100,8 @@ export type ReplayOutcome =
   | {
       idempotencyKey: string;
       outcome: "skipped";
-      reason: "backoff" | "unauthenticated" | "held-for-operator";
+      // CR-DC-267 — "behind-earlier": an earlier row of the queue is still waiting, so this one is not sent.
+      reason: "backoff" | "unauthenticated" | "held-for-operator" | "behind-earlier";
     };
 
 /**
@@ -121,7 +128,7 @@ export type ReplayOutcome =
  * 🔴 CONCURRENCY — read this before assuming the loop defends itself. It does NOT. An earlier
  * comment here claimed that "if called concurrently, the `markWriteAttempt` status flips to
  * `syncing` to prevent the same write being attempted by two passes at once". That was false:
- * `getPendingWrites` RANKS `syncing` rows second, it does not exclude them, and `replayOneWrite`
+ * `getPendingWrites` LISTS `syncing` rows beside `queued` ones, it does not exclude them, and `replayOneWrite`
  * skips only `failed` — so two overlapping passes both read a row before either marks it, and both
  * send it. What actually prevents that is the `singleFlight` wrapper around `replayAndBroadcast` in
  * `src/sw/index.ts` (CR-DC-069 §2.6), which coalesces overlapping triggers into one pass. The
@@ -137,14 +144,24 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayOutcome[]> {
   const pending = await getPendingWrites(deps.db);
   const outcomes: ReplayOutcome[] = [];
 
+  // 🔴 CR-DC-267 — HEAD-OF-LINE ORDER. Once a row is WAITING (held, backed off, or its send did not
+  // get an answer), nothing saved after it is sent in this pass. The loop used to step over such a row
+  // and send the next, so a later save overtook an earlier one and two pallets swapped numbers
+  // (bananaworld-ph PR #55). What does NOT hold anything back: a refused row (`failed` — it waits for
+  // a person, and the owner ruled it never blocks), an exhausted row (it lands on `failed`), a
+  // pre-update row and a discarded cross-origin row (neither is ever sent).
+  let blocked = false;
   for (const write of pending) {
     // CR-DC-240 — work saved by a pre-fix worker is NEVER sent (owner ruling 2026-10-11): the sweep
     // clears it once, and this is the backstop if that sweep has not managed to commit yet. No
     // outcome, no attempt, no send; the row is left exactly as it was. FIRST, ahead of every other
     // decision about the row.
     if (isPreUpdateRow(write)) continue;
-    const outcome = await replayOneWrite(write, { deps, fetchImpl, token, now });
-    if (outcome) outcomes.push(outcome);
+    const outcome = await replayOneWrite(write, { deps, fetchImpl, token, now, blocked });
+    if (outcome) {
+      outcomes.push(outcome);
+      if (outcome.outcome === "skipped" || outcome.outcome === "retry-later") blocked = true;
+    }
   }
 
   // CR-DC-070 — housekeeping, at the END, after every outcome above is computed.
@@ -176,6 +193,8 @@ interface ReplayOneContext {
   fetchImpl: typeof fetch;
   token: StationSession | null;
   now: Date;
+  /** CR-DC-267 — an earlier row of this pass is still waiting, so this one must not be sent. */
+  blocked: boolean;
 }
 
 async function replayOneWrite(
@@ -211,6 +230,11 @@ async function replayOneWrite(
   //     window. AC-10 pins the ordering.
   const skipForSession = checkSessionSkip(write, ctx);
   if (skipForSession) return skipForSession;
+
+  // CR-DC-267 — after the session check (a held row keeps its own real reason, AC-10), before backoff
+  // and `markWriteAttempt`: a row waiting its turn is left exactly as it was.
+  const skipForOrder = checkOrderSkip(write, ctx);
+  if (skipForOrder) return skipForOrder;
 
   const skipForBackoff = checkBackoffSkip(write, ctx.now);
   if (skipForBackoff) return skipForBackoff;
@@ -278,6 +302,11 @@ function checkSessionSkip(write: PendingWriteRecord, ctx: ReplayOneContext): Rep
   return null;
 }
 
+function checkOrderSkip(write: PendingWriteRecord, ctx: ReplayOneContext): ReplayOutcome | null {
+  if (!ctx.blocked) return null;
+  return { idempotencyKey: write.idempotencyKey, outcome: "skipped", reason: "behind-earlier" };
+}
+
 function checkBackoffSkip(write: PendingWriteRecord, now: Date): ReplayOutcome | null {
   if (write.attemptCount <= 0 || write.lastAttemptAt === null) return null;
   const backoff = backoffSecondsFor(write.attemptCount);
@@ -318,10 +347,28 @@ async function tryFetch(
 ): Promise<Response | null> {
   // Unbound from its holder on purpose (KI-227-01) — never `ctx.fetchImpl(…)`.
   const send = ctx.fetchImpl;
+  // 🔴 CR-DC-267 — A SEND THAT NEVER ANSWERS MUST NOT FREEZE THE TABLET. The pass is single-flighted, so
+  // one hung request used to swallow every later trigger until the browser killed the worker. The abort
+  // signal stops a real fetch; the race ends the wait even for a fetch that ignores the signal. A
+  // timeout is a network failure: the row takes the retryable path, keeps its Idempotency-Key, and the
+  // server answers a repeat with `idempotent_replay` if it did finish.
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, ctx.deps.fetchTimeoutMs ?? REPLAY_FETCH_TIMEOUT_MS);
+  });
   try {
-    return await send(write.url, buildReplayRequestInit(write, ctx.token));
+    return await Promise.race([
+      send(write.url, buildReplayRequestInit(write, ctx.token, controller.signal)),
+      timedOut,
+    ]);
   } catch {
     return null; // network error — caller handles retryable transition
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -405,6 +452,7 @@ export function backoffSecondsFor(attemptCount: number): number {
 function buildReplayRequestInit(
   write: PendingWriteRecord,
   token: StationSession | null,
+  signal: AbortSignal,
 ): RequestInit {
   const headers: Record<string, string> = {
     ...write.headers,
@@ -420,6 +468,7 @@ function buildReplayRequestInit(
     // Reasonable defaults for a SW-issued replay.
     credentials: "include",
     redirect: "follow",
+    signal,
   };
 }
 
