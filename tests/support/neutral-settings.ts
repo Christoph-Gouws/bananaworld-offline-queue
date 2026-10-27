@@ -32,6 +32,14 @@ export const NEUTRAL_SETTINGS: QueueWorkerSettings = {
   isProtectedReadPath: (pathname) => /^\/api\/runs\/home\/?$/.test(pathname),
   queueFullCode: "NEUTRAL_FULL",
   queueFullMessage: "Neutral: not saved, this device is full.",
+  isLiveOnlyWrite: (requestUrl) => {
+    try {
+      return new URL(requestUrl, "https://neutral.test").pathname === "/api/live-only";
+    } catch {
+      return false;
+    }
+  },
+  earlierWorkWaitingMessage: "Neutral: earlier work is still sending.",
   navigation: {
     isRoutePath: (pathname) =>
       pathname === "/station" || /^\/station\/job\/[^/]+\/?$/.test(pathname),

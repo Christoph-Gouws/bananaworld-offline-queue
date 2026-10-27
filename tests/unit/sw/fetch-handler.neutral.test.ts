@@ -31,6 +31,8 @@ const handler = createFetchHandler({
   readCache,
   queueFullCode: NEUTRAL_SETTINGS.queueFullCode,
   queueFullMessage: NEUTRAL_SETTINGS.queueFullMessage,
+  isLiveOnlyWrite: NEUTRAL_SETTINGS.isLiveOnlyWrite,
+  earlierWorkWaitingMessage: NEUTRAL_SETTINGS.earlierWorkWaitingMessage,
 });
 
 function liveSession() {

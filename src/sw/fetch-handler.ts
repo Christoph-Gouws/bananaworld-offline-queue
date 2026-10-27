@@ -9,7 +9,7 @@
 // testable without a real SW.
 
 import { IDEMPOTENCY_HEADER, generateIdempotencyKey } from "../idempotency";
-import { QueueStorageFullError, enqueueWrite } from "../queue";
+import { QueueStorageFullError, enqueueWrite, hasEarlierWaitingWork } from "../queue";
 import { driverReadIdentity, readCachedDriverRead, type ReadCache } from "../read-cache";
 import type { DriverReadRecord, OfflineQueueDB, PendingWriteRecord } from "../schema";
 import { isSessionIdle, isSessionTokenExpired, type StationSession } from "../token-storage";
@@ -41,6 +41,10 @@ export interface FetchHandlerSettings {
   readonly queueFullCode: string;
   /** The words the operator reads when the tablet is full. Single-line: it travels in a JSON body. */
   readonly queueFullMessage: string;
+  /** CR-DC-267 — writes whose screen needs the office's answer NOW, so they cannot wait in a queue. */
+  readonly isLiveOnlyWrite: (requestUrl: string) => boolean;
+  /** CR-DC-267 — what the operator reads when a live-only write is refused because earlier work waits. */
+  readonly earlierWorkWaitingMessage: string;
 }
 
 // HTTP methods that route through the queue. GETs pass through to the network
@@ -136,6 +140,28 @@ function queueFullResponseImpl(settings: FetchHandlerSettings, idempotencyKey: s
         "X-Queue-Full": "true",
         [IDEMPOTENCY_HEADER]: idempotencyKey,
       },
+    },
+  );
+}
+
+/**
+ * CR-DC-267 — the answer to a live-only write while earlier work on this device is still waiting.
+ * A 409, NOT a 202 and NOT `X-Queued-Locally`: nothing was saved, nothing was queued, and the screen
+ * shows the sentence in its existing error banner.
+ */
+export const EARLIER_WORK_WAITING_CODE = "EARLIER_WORK_WAITING";
+
+function earlierWorkWaitingResponse(
+  settings: FetchHandlerSettings,
+  idempotencyKey: string,
+): Response {
+  return new Response(
+    JSON.stringify({
+      error: { code: EARLIER_WORK_WAITING_CODE, message: settings.earlierWorkWaitingMessage },
+    }),
+    {
+      status: 409,
+      headers: { "Content-Type": "application/json", [IDEMPOTENCY_HEADER]: idempotencyKey },
     },
   );
 }
@@ -284,10 +310,23 @@ async function handleTabletWriteImpl(
   //     the page. Queueing it returns the ordinary 202, CR-DC-068's `checkSessionSkip` holds the row
   //     untouched, and CR-DC-069's sign-in trigger drains it the moment the same person taps back
   //     in. That is the promise the tablet already makes on screen (UX-SCREEN-230).
+  //
+  // 🔴 CR-DC-267 — ...AND ONLY IF NOTHING SAVED EARLIER IS STILL WAITING. A live send used to jump the
+  // line: with signal back and earlier work backed off or held, a new save reached the office first
+  // and took the next number. Now an ordinary write joins the queue behind the earlier work (the
+  // ordinary 202; `flushQueueAfterWrite` starts an in-order pass at once). A LIVE-ONLY write — one whose
+  // screen needs the office's answer now — cannot wait in a queue, so it is refused with a plain
+  // sentence and NOTHING is queued.
   if (deps.isOnline?.() === true && mayAttachToken(token, (deps.now ?? defaultNow)())) {
-    const direct = await sendDirect(request, { headers, token, fetchImpl: deps.fetchImpl });
-    if (direct !== null) return direct;
-    // direct === null → the live send threw (network dropped mid-request). Fall through to queue it.
+    const earlierWaiting = await hasEarlierWaitingWork(deps.db);
+    if (earlierWaiting && settings.isLiveOnlyWrite(request.url)) {
+      return earlierWorkWaitingResponse(settings, idempotencyKey);
+    }
+    if (!earlierWaiting) {
+      const direct = await sendDirect(request, { headers, token, fetchImpl: deps.fetchImpl });
+      if (direct !== null) return direct;
+      // direct === null → the live send threw (network dropped mid-request). Fall through to queue it.
+    }
   }
 
   try {
