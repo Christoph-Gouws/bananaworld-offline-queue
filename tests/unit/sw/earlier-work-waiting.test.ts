@@ -29,6 +29,7 @@ const handler = createFetchHandler({
   queueFullMessage: NEUTRAL_SETTINGS.queueFullMessage,
   isLiveOnlyWrite: NEUTRAL_SETTINGS.isLiveOnlyWrite,
   earlierWorkWaitingMessage: NEUTRAL_SETTINGS.earlierWorkWaitingMessage,
+  earlierWorkHeldMessage: NEUTRAL_SETTINGS.earlierWorkHeldMessage,
 });
 
 const live = () =>
@@ -136,5 +137,87 @@ describe("CR-DC-267 — an online save waits its turn", () => {
     const row = (await getPendingWrites(db))[0]!;
     await db.put("pending_writes", { ...row, status: "syncing" });
     expect(await hasEarlierWaitingWork(db)).toBe(true);
+  });
+});
+
+// CR-DC-269 — reviewer finding F2 on the DC's PR #523. The live session here is operator-a at station-a.
+// A row captured by `operator-z` is HELD for someone else: it cannot send under this session, so "wait a
+// moment" is untrue. The refusal must say so, under its own code. Nothing is queued either way.
+describe("CR-DC-269 — the refusal tells the truth about held work", () => {
+  const fetchImpl = () => vi.fn(async () => new Response("{}", { status: 201 }));
+  const refusalCode = async (path: string): Promise<string | undefined> => {
+    const body = (await (await run(path, fetchImpl()))?.json()) as { error?: { code?: string } };
+    return body.error?.code;
+  };
+
+  it("A signs out with work waiting, B starts a live-only write: 409 EARLIER_WORK_HELD, nothing queued or sent", async () => {
+    await seedWaiting({ operatorId: "operator-z" });
+    const send = fetchImpl();
+    const response = await run("/api/live-only", send);
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toEqual({
+      error: { code: "EARLIER_WORK_HELD", message: NEUTRAL_SETTINGS.earlierWorkHeldMessage },
+    });
+    expect(send).not.toHaveBeenCalled();
+    const rows = await getPendingWrites(db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.operatorId).toBe("operator-z");
+    expect(rows[0]?.status).toBe("queued");
+  });
+
+  it("a row held under ANOTHER STATION is held too", async () => {
+    await seedWaiting({ stationId: "station-other" });
+    expect(await refusalCode("/api/live-only")).toBe("EARLIER_WORK_HELD");
+  });
+
+  it("a row with NO known person is held too (fail-closed)", async () => {
+    await seedWaiting({ operatorId: null });
+    expect(await refusalCode("/api/live-only")).toBe("EARLIER_WORK_HELD");
+  });
+
+  it("the person's OWN row waiting first, then someone else's held row: still held", async () => {
+    await seedWaiting({ idempotencyKey: "mine", queuedAt: "2026-10-27T06:00:00.000Z" });
+    await seedWaiting({ idempotencyKey: "theirs", operatorId: "operator-z" });
+    expect(await refusalCode("/api/live-only")).toBe("EARLIER_WORK_HELD");
+    expect(await getPendingWrites(db)).toHaveLength(2);
+  });
+
+  it("only the person's OWN row waiting: today's EARLIER_WORK_WAITING body, byte for byte", async () => {
+    await seedWaiting();
+    const response = await run("/api/live-only", fetchImpl());
+    expect(response?.status).toBe(409);
+    expect(await response?.text()).toBe(
+      JSON.stringify({
+        error: {
+          code: "EARLIER_WORK_WAITING",
+          message: NEUTRAL_SETTINGS.earlierWorkWaitingMessage,
+        },
+      }),
+    );
+  });
+
+  it("an ORDINARY write behind held work is still queued (202), not refused", async () => {
+    await seedWaiting({ operatorId: "operator-z" });
+    const send = fetchImpl();
+    const response = await run("/api/jobs/save", send);
+    expect(response?.status).toBe(202);
+    expect(send).not.toHaveBeenCalled();
+    expect(await getPendingWrites(db)).toHaveLength(2);
+  });
+
+  it("a PRE-UPDATE held row is not waiting work: no refusal, sent live", async () => {
+    await seedWaiting({ operatorId: "operator-z" });
+    const row = (await getPendingWrites(db))[0]!;
+    const { replayGeneration: _drop, ...old } = row;
+    void _drop;
+    await db.put("pending_writes", old);
+    expect((await run("/api/live-only", fetchImpl()))?.status).toBe(201);
+  });
+
+  it("a FAILED row of someone else does not make a refusal of either kind", async () => {
+    await seedWaiting({ operatorId: "operator-z" });
+    const row = (await getPendingWrites(db))[0]!;
+    await db.put("pending_writes", { ...row, status: "failed" });
+    expect((await run("/api/live-only", fetchImpl()))?.status).toBe(201);
   });
 });

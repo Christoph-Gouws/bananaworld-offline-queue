@@ -9,7 +9,13 @@
 // testable without a real SW.
 
 import { IDEMPOTENCY_HEADER, generateIdempotencyKey } from "../idempotency";
-import { QueueStorageFullError, enqueueWrite, hasEarlierWaitingWork } from "../queue";
+import { isPreUpdateRow } from "../pre-update-clear";
+import {
+  QueueStorageFullError,
+  enqueueWrite,
+  getHeldWrites,
+  hasEarlierWaitingWork,
+} from "../queue";
 import { driverReadIdentity, readCachedDriverRead, type ReadCache } from "../read-cache";
 import type { DriverReadRecord, OfflineQueueDB, PendingWriteRecord } from "../schema";
 import { isSessionIdle, isSessionTokenExpired, type StationSession } from "../token-storage";
@@ -45,6 +51,8 @@ export interface FetchHandlerSettings {
   readonly isLiveOnlyWrite: (requestUrl: string) => boolean;
   /** CR-DC-267 — what the operator reads when a live-only write is refused because earlier work waits. */
   readonly earlierWorkWaitingMessage: string;
+  /** CR-DC-269 — the same refusal when the earlier work is held for someone else (waiting will not clear it). */
+  readonly earlierWorkHeldMessage: string;
 }
 
 // HTTP methods that route through the queue. GETs pass through to the network
@@ -150,14 +158,21 @@ function queueFullResponseImpl(settings: FetchHandlerSettings, idempotencyKey: s
  * shows the sentence in its existing error banner.
  */
 export const EARLIER_WORK_WAITING_CODE = "EARLIER_WORK_WAITING";
+/**
+ * CR-DC-269 — the same 409, under its own code, when some of the earlier work is HELD for someone else.
+ * Waiting alone never sends a held row (it matches only its own operator at its own station), so the
+ * "still sending" sentence would be untrue and Send now cannot help. The page branches on the code.
+ */
+export const EARLIER_WORK_HELD_CODE = "EARLIER_WORK_HELD";
 
-function earlierWorkWaitingResponse(
-  settings: FetchHandlerSettings,
+function earlierWorkRefusalResponse(
+  code: string,
+  message: string,
   idempotencyKey: string,
 ): Response {
   return new Response(
     JSON.stringify({
-      error: { code: EARLIER_WORK_WAITING_CODE, message: settings.earlierWorkWaitingMessage },
+      error: { code, message },
     }),
     {
       status: 409,
@@ -320,7 +335,21 @@ async function handleTabletWriteImpl(
   if (deps.isOnline?.() === true && mayAttachToken(token, (deps.now ?? defaultNow)())) {
     const earlierWaiting = await hasEarlierWaitingWork(deps.db);
     if (earlierWaiting && settings.isLiveOnlyWrite(request.url)) {
-      return earlierWorkWaitingResponse(settings, idempotencyKey);
+      // CR-DC-269 — ANY held row among the earlier work makes "still sending" untrue: a held row is
+      // released only by its own person signing in, or by a manager's Clear. Same predicate as Sync
+      // details' Held section; pre-update rows are excluded exactly as `hasEarlierWaitingWork` excludes them.
+      const held = (await getHeldWrites(deps.db, token)).some((row) => !isPreUpdateRow(row));
+      return held
+        ? earlierWorkRefusalResponse(
+            EARLIER_WORK_HELD_CODE,
+            settings.earlierWorkHeldMessage,
+            idempotencyKey,
+          )
+        : earlierWorkRefusalResponse(
+            EARLIER_WORK_WAITING_CODE,
+            settings.earlierWorkWaitingMessage,
+            idempotencyKey,
+          );
     }
     if (!earlierWaiting) {
       const direct = await sendDirect(request, { headers, token, fetchImpl: deps.fetchImpl });

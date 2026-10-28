@@ -68,6 +68,13 @@ export interface QueueWorkerSettings extends ReadCacheSettings {
   readonly isLiveOnlyWrite: (requestUrl: string) => boolean;
   /** CR-DC-267 — the words the operator reads for that refusal. Single-line: it travels in a JSON body. */
   readonly earlierWorkWaitingMessage: string;
+  /**
+   * CR-DC-269 — the words for the SAME refusal when the earlier work is HELD for someone else (they
+   * signed out, or it was saved under another station). Waiting never releases a held row, so
+   * `earlierWorkWaitingMessage` would be untrue. This is the app's name-free fallback sentence; a page may
+   * replace it with a fuller one. Single-line: it travels in a JSON body. Required, no default.
+   */
+  readonly earlierWorkHeldMessage: string;
 
   readonly navigation: NavigationSettings;
 

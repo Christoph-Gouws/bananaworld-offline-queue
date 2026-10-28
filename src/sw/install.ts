@@ -58,6 +58,7 @@ export function installQueueWorker(self: QueueWorkerScope, settings: QueueWorker
       queueFullMessage: settings.queueFullMessage,
       isLiveOnlyWrite: settings.isLiveOnlyWrite,
       earlierWorkWaitingMessage: settings.earlierWorkWaitingMessage,
+      earlierWorkHeldMessage: settings.earlierWorkHeldMessage,
     });
   const {
     handleDriverNavigation,

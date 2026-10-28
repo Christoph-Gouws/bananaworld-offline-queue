@@ -82,6 +82,16 @@ commit SHA. A consumer never edits the package from its own repo.
 Device-key signing of queued actions (TA-OFF-008) is **API-CHG-011 part b** and is not in this package yet —
 no unused extension point ships. It arrives as a new version that a consumer opts into by bumping its pin.
 
+## v0.4.0 — the live-only refusal tells held work from work that is only still sending (CR-DC-269)
+
+**The defect.** v0.3.0 refused a live-only write with one fixed sentence, "still sending, wait a moment". When the
+earlier work was HELD for someone else (they signed out, or it was saved under another station) that was untrue:
+waiting never sends a held row and Send now cannot move it. Reviewer finding F2 on DC PR #523.
+
+- **Two codes, one 409, nothing queued either way.** `EARLIER_WORK_HELD` when ANY waiting row is held (`getHeldWrites` for the live session, pre-update rows excluded — the Sync details predicate); otherwise `EARLIER_WORK_WAITING`, byte for byte as in v0.3.0. Both are exported (`EARLIER_WORK_WAITING_CODE`, `EARLIER_WORK_HELD_CODE`) from `sw/fetch-handler`.
+- **One new REQUIRED setting, no defaults:** `earlierWorkHeldMessage` — the app's name-free fallback sentence. A page that knows more (time, station) may replace it; it branches on the code.
+- The send order, the queue, the live-only set and the on-device format are unchanged (`DB_VERSION` stays 4). A consumer on v0.3.0 does not compile on v0.4.0 until it answers the new setting.
+
 ## v0.3.0 — the queue sends in the order it was saved (CR-DC-267)
 
 **The rule.** Within one device queue, a row is never sent while an earlier row is still waiting — held (no
