@@ -1,6 +1,6 @@
 {
   "name": "@bananaworld/offline-queue",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "THE shared offline write queue for the Bananaworld estate's tablet apps (CR-DC-227, packhouse API-CHG-005). One implementation of: the IndexedDB queue and its on-device format, the idempotent replay loop, the service-worker wiring (install / activate / fetch / message / sync, token confined to the worker), the session renewal, the driver-style offline read caches, and the page-side drain triggers. Replaces the copy that lived inside the DC. Shipped as TypeScript source; consumers transpile it via Next.js transpilePackages. Everything an app can differ on is INJECTED (QueueWorkerSettings, every field required, no defaults) — this package never reads process.env and names none of an app's routes.",
   "license": "UNLICENSED",

@@ -40,6 +40,7 @@ export const NEUTRAL_SETTINGS: QueueWorkerSettings = {
     }
   },
   earlierWorkWaitingMessage: "Neutral: earlier work is still sending.",
+  earlierWorkHeldMessage: "Neutral: earlier work belongs to someone who signed out.",
   navigation: {
     isRoutePath: (pathname) =>
       pathname === "/station" || /^\/station\/job\/[^/]+\/?$/.test(pathname),
