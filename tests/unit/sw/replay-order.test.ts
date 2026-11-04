@@ -4,8 +4,8 @@
 // its own backoff window and sent the next one, so a later save overtook an earlier one and the two
 // pallets got each other's numbers. W1 has more failed attempts than W2, so its window is longer.
 //
-// RULE UNDER TEST: within one device queue, a row is never sent while an earlier row is still waiting —
-// held, backed off, or mid-send. A REFUSED (`failed`) row, a pre-update row and a cross-origin row never
+// RULE UNDER TEST: a row is never sent while an earlier row OF THE SAME PERSON (operator + station +
+// depot; v0.5.0) is still waiting — held, backed off, or mid-send. A REFUSED (`failed`) row, a pre-update row and a cross-origin row never
 // hold anything back.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -203,15 +203,87 @@ describe("CR-DC-267 — queue order survives backoff, failure, a hung send and a
     });
   });
 
-  describe("what MUST hold a row back", () => {
-    it("an earlier row held for ANOTHER operator holds W2 back (device-wide, owner ruling)", async () => {
-      await seed("w1", "2026-10-27T07:00:00.000Z", 0, { operatorId: "someone-else" });
-      await seed("w2", "2026-10-27T07:00:01.000Z");
+  // 🔴 v0.5.0 — owner ruling 2026-11-02: the order is kept PER PERSON (operator + station + depot).
+  //    Truck station HRZ 710 MP, 2026-11-02: four walk-around rows held for a driver who had signed out
+  //    stopped ten later rows by the next driver. Under v0.4.0 the first test below sent nothing.
+  describe("v0.5.0 — someone else's waiting work never holds a row back", () => {
+    it("rows HELD for another operator do not hold back the signed-in operator's rows", async () => {
+      for (const n of [1, 2, 3, 4]) {
+        await seed(`a${n}`, `2026-10-27T06:0${n}:00.000Z`, 0, {
+          operatorId: "driver-who-signed-out",
+        });
+      }
+      await seed("b1", "2026-10-27T07:00:00.000Z");
+      await seed("b2", "2026-10-27T07:00:01.000Z");
       const fetchMock = vi.fn().mockImplementation(async () => ok());
       const outcomes = await replay(fetchMock as unknown as typeof fetch, at(0));
+      expect(sentNames(fetchMock)).toEqual(["b1", "b2"]);
+      expect(outcomes.map((o) => (o.outcome === "skipped" ? o.reason : o.outcome))).toEqual([
+        // Each held row keeps its OWN reason (the session check runs first, AC-10).
+        "held-for-operator",
+        "held-for-operator",
+        "held-for-operator",
+        "held-for-operator",
+        "synced",
+        "synced",
+      ]);
+      // The held rows are untouched — still queued, no attempt counted — so they still send the moment
+      // their own person signs back in.
+      const left = await getPendingWrites(db);
+      expect(left.map((r) => [r.idempotencyKey, r.status, r.attemptCount])).toEqual([
+        ["a1", "queued", 0],
+        ["a2", "queued", 0],
+        ["a3", "queued", 0],
+        ["a4", "queued", 0],
+      ]);
+    });
+
+    it("when the held rows' own person signs back in, they send in their saved order", async () => {
+      for (const n of [1, 2]) {
+        await seed(`a${n}`, `2026-10-27T06:0${n}:00.000Z`, 0, { operatorId: "driver-a" });
+      }
+      const fetchMock = vi.fn().mockImplementation(async () => ok());
+      await runReplay({
+        db,
+        readToken: async () => stationSession({ operatorId: "driver-a" }),
+        fetch: fetchMock as unknown as typeof fetch,
+        now: () => at(0),
+      });
+      expect(sentNames(fetchMock)).toEqual(["a1", "a2"]);
+    });
+
+    it("a row held under ANOTHER STATION does not hold back this station's row", async () => {
+      await seed("w1", "2026-10-27T07:00:00.000Z", 0, { stationId: "another-station" });
+      await seed("w2", "2026-10-27T07:00:01.000Z");
+      const fetchMock = vi.fn().mockImplementation(async () => ok());
+      await replay(fetchMock as unknown as typeof fetch, at(0));
+      expect(sentNames(fetchMock)).toEqual(["w2"]);
+    });
+
+    it("mixed: the signed-in person's own backed-off row still holds THEIR later row; others' rows don't", async () => {
+      await seed("held", "2026-10-27T06:00:00.000Z", 0, { operatorId: "driver-who-signed-out" });
+      await seed("mine1", "2026-10-27T07:00:00.000Z", 3); // inside its backoff window at T0+1s
+      await seed("mine2", "2026-10-27T07:00:01.000Z");
+      const fetchMock = vi.fn().mockImplementation(async () => ok());
+      const outcomes = await replay(fetchMock as unknown as typeof fetch, at(1));
       expect(fetchMock).not.toHaveBeenCalled();
       expect(outcomes.map((o) => (o.outcome === "skipped" ? o.reason : o.outcome))).toEqual([
         "held-for-operator",
+        "backoff",
+        "behind-earlier",
+      ]);
+    });
+  });
+
+  describe("what MUST hold a row back", () => {
+    it("an earlier row of the SAME person, backed off, still holds their later row back", async () => {
+      await seed("w1", "2026-10-27T07:00:00.000Z", 3);
+      await seed("w2", "2026-10-27T07:00:01.000Z");
+      const fetchMock = vi.fn().mockImplementation(async () => ok());
+      const outcomes = await replay(fetchMock as unknown as typeof fetch, at(1));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(outcomes.map((o) => (o.outcome === "skipped" ? o.reason : o.outcome))).toEqual([
+        "backoff",
         "behind-earlier",
       ]);
     });

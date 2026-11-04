@@ -15,6 +15,7 @@ import {
   enqueueWrite,
   getHeldWrites,
   hasEarlierWaitingWork,
+  writeOrderLane,
 } from "../queue";
 import { driverReadIdentity, readCachedDriverRead, type ReadCache } from "../read-cache";
 import type { DriverReadRecord, OfflineQueueDB, PendingWriteRecord } from "../schema";
@@ -332,13 +333,24 @@ async function handleTabletWriteImpl(
   // ordinary 202; `flushQueueAfterWrite` starts an in-order pass at once). A LIVE-ONLY write — one whose
   // screen needs the office's answer now — cannot wait in a queue, so it is refused with a plain
   // sentence and NOTHING is queued.
+  //
+  // 🔴 v0.5.0 — "EARLIER WORK" MEANS THIS PERSON'S OWN (owner ruling 2026-11-02). Somebody else's waiting
+  //    or held work no longer makes this save wait or refuses it: the replay loop sends past it too, so
+  //    queueing this save behind it would only have repeated the jam on the save path. The session's
+  //    identity is the one the new row is about to be stamped with, so the two cannot disagree.
   if (deps.isOnline?.() === true && mayAttachToken(token, (deps.now ?? defaultNow)())) {
-    const earlierWaiting = await hasEarlierWaitingWork(deps.db);
+    // No session ⇒ the row below is stamped with three nulls, so the lane is the all-unknown one.
+    const identity = token ?? { operatorId: null, stationId: null, warehouseId: null };
+    const ownLane = writeOrderLane(identity);
+    const earlierWaiting = await hasEarlierWaitingWork(deps.db, identity);
     if (earlierWaiting && settings.isLiveOnlyWrite(request.url)) {
       // CR-DC-269 — ANY held row among the earlier work makes "still sending" untrue: a held row is
       // released only by its own person signing in, or by a manager's Clear. Same predicate as Sync
       // details' Held section; pre-update rows are excluded exactly as `hasEarlierWaitingWork` excludes them.
-      const held = (await getHeldWrites(deps.db, token)).some((row) => !isPreUpdateRow(row));
+      // v0.5.0 — restricted to this person's own lane, like `earlierWaiting` above.
+      const held = (await getHeldWrites(deps.db, token)).some(
+        (row) => !isPreUpdateRow(row) && writeOrderLane(row) === ownLane,
+      );
       return held
         ? earlierWorkRefusalResponse(
             EARLIER_WORK_HELD_CODE,

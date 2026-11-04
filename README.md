@@ -82,6 +82,22 @@ commit SHA. A consumer never edits the package from its own repo.
 Device-key signing of queued actions (TA-OFF-008) is **API-CHG-011 part b** and is not in this package yet —
 no unused extension point ships. It arrives as a new version that a consumer opts into by bumping its pin.
 
+## v0.5.0 — one person's waiting work never holds back anyone else's (owner ruling 2026-11-02)
+
+**The defect.** v0.3.0's order was device-wide: once any row waited, nothing saved after it was sent, by anyone.
+A driver who signed out with unsent work (it is then HELD for them, CR-DC-068) therefore jammed the tablet for
+every later driver until they came back. Truck station HRZ 710 MP, 2026-11-02: four walk-around rows held for one
+driver stopped ten later rows by the next driver, who was signed in and online. Raised as CR-DC-288; this is its
+urgent half, split off by the owner.
+
+- **The order is kept per person** — the same operator, station and depot (`writeOrderLane`, the identity triple `writeBelongsToSession` compares). A waiting row holds back only later rows in its own lane. Within one person nothing changes: their later save still waits behind their own earlier one (CR-DC-267's pallet-number case).
+- **`runReplay`** sends past another person's held or backed-off rows. Held rows are untouched (no attempt counted) and still send, in order, the moment their own person signs back in at that station.
+- **An online save** waits (202 queued, or the live-only 409) only behind the same person's own waiting work. `hasEarlierWaitingWork(db, identity?)` takes the identity; without one it counts every row, as before.
+- **`EARLIER_WORK_HELD`** is now reached only by a session carrying no known person (the all-unknown lane). Someone else's held row no longer produces it. The setting and both codes are unchanged.
+- **Who is recorded as the author does not change.** A row is still sent only under the session of the person who captured it. Sending held work under another login is CR-DC-288's second half and is **not** in this version.
+- No on-device format change (`DB_VERSION` stays 4), no new setting, no change to backoff, the attempt ceiling or refusal handling.
+- **Consumers:** bananaworld-dc (v0.4.0 → v0.5.0, its own change run). bananaworld-ph is on v0.3.0 and has the same jam; it moves by its own pin bump (it must also answer v0.4.0's `earlierWorkHeldMessage`).
+
 ## v0.4.0 — the live-only refusal tells held work from work that is only still sending (CR-DC-269)
 
 **The defect.** v0.3.0 refused a live-only write with one fixed sentence, "still sending, wait a moment". When the

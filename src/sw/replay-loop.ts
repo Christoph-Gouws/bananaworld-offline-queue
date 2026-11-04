@@ -4,8 +4,10 @@
 //          TECH-BE-010, API-FAIL-007 (OFFLINE_QUEUE_SYNC_CONFLICT), API-SYNC-001,
 //          PRD-NFR-005 (10-min outage), PRD-NFR-006 (multi-station concurrent).
 //
-// Iterates pending_writes in queuedAt order — and NEVER sends a row while an earlier one is still
-// waiting (held, backed off, mid-send); a refused (`failed`) row does not hold anything back (CR-DC-267).
+// Iterates pending_writes in queuedAt order — and NEVER sends a row while an earlier row OF THE SAME
+// PERSON, at the same station and depot, is still waiting (held, backed off, mid-send); a refused
+// (`failed`) row does not hold anything back (CR-DC-267). v0.5.0: another person's waiting work never
+// holds a row back (owner ruling 2026-11-02 — see `writeOrderLane`).
 // Replays each via fetch from the
 // SW context (which lets the SW inject `Authorization: Bearer <token>` from
 // its protected storage per SEC-AUTH-013); maps the response code to a queue
@@ -42,6 +44,7 @@ import {
   markWriteFailed,
   pruneSyncHistory,
   writeBelongsToSession,
+  writeOrderLane,
 } from "../queue";
 import { isPreUpdateRow } from "../pre-update-clear";
 import type { ConflictReason, OfflineQueueDB, PendingWriteRecord } from "../schema";
@@ -150,17 +153,25 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayOutcome[]> {
   // (bananaworld-ph PR #55). What does NOT hold anything back: a refused row (`failed` — it waits for
   // a person, and the owner ruled it never blocks), an exhausted row (it lands on `failed`), a
   // pre-update row and a discarded cross-origin row (neither is ever sent).
-  let blocked = false;
+  //
+  // 🔴 v0.5.0 — PER PERSON, NOT PER DEVICE (owner ruling 2026-11-02). A waiting row blocks only the later
+  //    rows in its OWN lane (`writeOrderLane`: the same operator, station and depot). Device-wide, one
+  //    driver who signed out with unsent work stopped every later save on the tablet, by every other
+  //    driver, until they came back. Their own later saves still wait behind them, as before.
+  const blockedLanes = new Set<string>();
   for (const write of pending) {
     // CR-DC-240 — work saved by a pre-fix worker is NEVER sent (owner ruling 2026-10-11): the sweep
     // clears it once, and this is the backstop if that sweep has not managed to commit yet. No
     // outcome, no attempt, no send; the row is left exactly as it was. FIRST, ahead of every other
     // decision about the row.
     if (isPreUpdateRow(write)) continue;
+    const lane = writeOrderLane(write);
+    const blocked = blockedLanes.has(lane);
     const outcome = await replayOneWrite(write, { deps, fetchImpl, token, now, blocked });
     if (outcome) {
       outcomes.push(outcome);
-      if (outcome.outcome === "skipped" || outcome.outcome === "retry-later") blocked = true;
+      if (outcome.outcome === "skipped" || outcome.outcome === "retry-later")
+        blockedLanes.add(lane);
     }
   }
 
@@ -193,7 +204,7 @@ interface ReplayOneContext {
   fetchImpl: typeof fetch;
   token: StationSession | null;
   now: Date;
-  /** CR-DC-267 — an earlier row of this pass is still waiting, so this one must not be sent. */
+  /** CR-DC-267 — an earlier row of this pass, in THIS row's own lane (v0.5.0), is still waiting. */
   blocked: boolean;
 }
 
