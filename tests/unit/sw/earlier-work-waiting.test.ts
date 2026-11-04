@@ -141,45 +141,63 @@ describe("CR-DC-267 — an online save waits its turn", () => {
 });
 
 // CR-DC-269 — reviewer finding F2 on the DC's PR #523. The live session here is operator-a at station-a.
-// A row captured by `operator-z` is HELD for someone else: it cannot send under this session, so "wait a
-// moment" is untrue. The refusal must say so, under its own code. Nothing is queued either way.
-describe("CR-DC-269 — the refusal tells the truth about held work", () => {
+// A row captured by `operator-z` is HELD for someone else: it cannot send under this session.
+//
+// 🔴 v0.5.0 (owner ruling 2026-11-02) — SOMEBODY ELSE'S HELD WORK NO LONGER STOPS THIS PERSON. Under v0.4.0
+//    it refused a live-only write (EARLIER_WORK_HELD) and queued an ordinary one behind it, which is how one
+//    driver who signed out jammed the tablet for every other driver. Only the person's OWN earlier work
+//    makes them wait now. The held refusal survives for the one case left that can reach it: a session
+//    that carries no known person, whose lane is the all-unknown one.
+describe("CR-DC-269 / v0.5.0 — someone else's held work never stops this person", () => {
   const fetchImpl = () => vi.fn(async () => new Response("{}", { status: 201 }));
-  const refusalCode = async (path: string): Promise<string | undefined> => {
-    const body = (await (await run(path, fetchImpl()))?.json()) as { error?: { code?: string } };
-    return body.error?.code;
-  };
 
-  it("A signs out with work waiting, B starts a live-only write: 409 EARLIER_WORK_HELD, nothing queued or sent", async () => {
+  it("A signs out with work waiting, B starts a live-only write: sent live; A's row untouched and still held", async () => {
     await seedWaiting({ operatorId: "operator-z" });
     const send = fetchImpl();
     const response = await run("/api/live-only", send);
-    expect(response?.status).toBe(409);
-    expect(await response?.json()).toEqual({
-      error: { code: "EARLIER_WORK_HELD", message: NEUTRAL_SETTINGS.earlierWorkHeldMessage },
-    });
-    expect(send).not.toHaveBeenCalled();
+    expect(response?.status).toBe(201);
+    expect(send).toHaveBeenCalledOnce();
     const rows = await getPendingWrites(db);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.operatorId).toBe("operator-z");
-    expect(rows[0]?.status).toBe("queued");
+    expect([rows[0]?.status, rows[0]?.attemptCount]).toEqual(["queued", 0]);
   });
 
-  it("a row held under ANOTHER STATION is held too", async () => {
+  it("a row held under ANOTHER STATION does not stop this person", async () => {
     await seedWaiting({ stationId: "station-other" });
-    expect(await refusalCode("/api/live-only")).toBe("EARLIER_WORK_HELD");
+    expect((await run("/api/live-only", fetchImpl()))?.status).toBe(201);
   });
 
-  it("a row with NO known person is held too (fail-closed)", async () => {
+  it("a row with NO known person does not stop a known person", async () => {
     await seedWaiting({ operatorId: null });
-    expect(await refusalCode("/api/live-only")).toBe("EARLIER_WORK_HELD");
+    expect((await run("/api/live-only", fetchImpl()))?.status).toBe(201);
   });
 
-  it("the person's OWN row waiting first, then someone else's held row: still held", async () => {
+  it("the person's OWN row waiting first, then someone else's held row: refused as WAITING (their own)", async () => {
     await seedWaiting({ idempotencyKey: "mine", queuedAt: "2026-10-27T06:00:00.000Z" });
     await seedWaiting({ idempotencyKey: "theirs", operatorId: "operator-z" });
-    expect(await refusalCode("/api/live-only")).toBe("EARLIER_WORK_HELD");
+    const body = (await (await run("/api/live-only", fetchImpl()))?.json()) as {
+      error?: { code?: string };
+    };
+    expect(body.error?.code).toBe("EARLIER_WORK_WAITING");
     expect(await getPendingWrites(db)).toHaveLength(2);
+  });
+
+  it("a session with NO known person, behind a row with no known person: EARLIER_WORK_HELD (fail-closed)", async () => {
+    await seedWaiting({ operatorId: null, stationId: null, warehouseId: null });
+    const anonymous = { ...live(), operatorId: null, stationId: null, warehouseId: null };
+    const response = await handler.handleTabletWrite(write("/api/live-only"), {
+      db,
+      readToken: async () => anonymous as unknown as ReturnType<typeof live>,
+      isTabletFlowRequest: () => true,
+      isOnline: () => true,
+      fetchImpl: fetchImpl() as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(response?.status).toBe(409);
+    expect(((await response?.json()) as { error: { code: string } }).error.code).toBe(
+      "EARLIER_WORK_HELD",
+    );
   });
 
   it("only the person's OWN row waiting: today's EARLIER_WORK_WAITING body, byte for byte", async () => {
@@ -196,11 +214,19 @@ describe("CR-DC-269 — the refusal tells the truth about held work", () => {
     );
   });
 
-  it("an ORDINARY write behind held work is still queued (202), not refused", async () => {
+  it("an ORDINARY write behind someone else's held work is sent live, not queued behind it", async () => {
     await seedWaiting({ operatorId: "operator-z" });
     const send = fetchImpl();
     const response = await run("/api/jobs/save", send);
-    expect(response?.status).toBe(202);
+    expect(response?.status).toBe(201);
+    expect(send).toHaveBeenCalledOnce();
+    expect(await getPendingWrites(db)).toHaveLength(1);
+  });
+
+  it("an ORDINARY write behind the person's OWN waiting work is still queued (202) — CR-DC-267 unchanged", async () => {
+    await seedWaiting();
+    const send = fetchImpl();
+    expect((await run("/api/jobs/save", send))?.status).toBe(202);
     expect(send).not.toHaveBeenCalled();
     expect(await getPendingWrites(db)).toHaveLength(2);
   });

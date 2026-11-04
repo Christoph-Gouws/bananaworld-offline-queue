@@ -64,7 +64,7 @@ export interface QueueWorkerSettings extends ReadCacheSettings {
   /** The words the operator reads when the tablet is full. Single-line: it travels in a JSON body. */
   readonly queueFullMessage: string;
 
-  /** CR-DC-267 — writes whose screen needs the office's answer NOW (refused, not queued, while earlier work waits). */
+  /** CR-DC-267 — writes whose screen needs the office's answer NOW (refused, not queued, while the same person’s earlier work waits — v0.5.0). */
   readonly isLiveOnlyWrite: (requestUrl: string) => boolean;
   /** CR-DC-267 — the words the operator reads for that refusal. Single-line: it travels in a JSON body. */
   readonly earlierWorkWaitingMessage: string;
@@ -73,6 +73,9 @@ export interface QueueWorkerSettings extends ReadCacheSettings {
    * signed out, or it was saved under another station). Waiting never releases a held row, so
    * `earlierWorkWaitingMessage` would be untrue. This is the app's name-free fallback sentence; a page may
    * replace it with a fuller one. Single-line: it travels in a JSON body. Required, no default.
+   *
+   * v0.5.0 — someone else’s held work no longer makes a refusal at all, so this is now reached only by a
+   * session that carries no known person. Kept, and still required, so no consumer has to change.
    */
   readonly earlierWorkHeldMessage: string;
 

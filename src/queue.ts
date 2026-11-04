@@ -472,14 +472,43 @@ export async function getPendingWrites(db: OfflineQueueDB): Promise<PendingWrite
 }
 
 /**
- * CR-DC-267 — is any work saved earlier than "now" still waiting on this device? `queued` and `syncing`
+ * v0.5.0 — WHOSE TURN A ROW WAITS IN. The save order is kept per person, per station, per depot: the
+ * same identity triple `writeBelongsToSession` compares (owner ruling 2026-11-02, CR-DC-288 split).
+ *
+ * 🔴 ONE PERSON'S WAITING WORK NEVER HOLDS BACK ANYONE ELSE'S. Under v0.3.0 the order was device-wide, so
+ *    a driver who signed out with unsent work jammed every later save on that tablet, by every other
+ *    driver, until they came back (truck station HRZ 710 MP, 2026-11-02). Within one person the order is
+ *    unchanged — their own later save still waits behind their own earlier one, which is what CR-DC-267
+ *    exists for (bananaworld-ph PR #55: two pallets of ONE operator swapped numbers).
+ *
+ * ⚠ An unknown part is kept as its own value, never matched to a known one. Two rows that both lack an
+ *   identity share a lane with each other only — and neither can ever be sent anyway (fail-closed).
+ */
+export function writeOrderLane(write: WriteIdentity): string {
+  const part = (value: string | null | undefined) =>
+    value === null || value === undefined ? "∅" : `=${value}`;
+  return `${part(write.operatorId)}|${part(write.stationId)}|${part(write.warehouseId)}`;
+}
+
+/**
+ * CR-DC-267 — is work saved earlier than "now" still waiting on this device? `queued` and `syncing`
  * rows count; `failed` rows (refused — they wait for a person, not for time) and pre-update rows (never
  * sent by design) do not, for the same reason they never hold back a replay pass.
+ *
+ * v0.5.0 — with `identity`, only that person's own waiting work counts (see `writeOrderLane`): a new save
+ * waits behind its own author's earlier work, never behind somebody else's. Without it, every row counts.
  */
-export async function hasEarlierWaitingWork(db: OfflineQueueDB): Promise<boolean> {
+export async function hasEarlierWaitingWork(
+  db: OfflineQueueDB,
+  identity?: WriteIdentity,
+): Promise<boolean> {
   const all = await getPendingWrites(db);
+  const lane = identity === undefined ? null : writeOrderLane(identity);
   return all.some(
-    (row) => (row.status === "queued" || row.status === "syncing") && !isPreUpdateRow(row),
+    (row) =>
+      (row.status === "queued" || row.status === "syncing") &&
+      !isPreUpdateRow(row) &&
+      (lane === null || writeOrderLane(row) === lane),
   );
 }
 
